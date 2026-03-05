@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Deque
 
+from ..errors import RateLimitTimeoutError
+
 
 @dataclass(slots=True)
 class RateLimitConfig:
@@ -28,6 +30,8 @@ class AsyncRateLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> float:
+        start = time.perf_counter()
+        waited = 0.0
         while True:
             async with self._lock:
                 now = time.perf_counter()
@@ -37,13 +41,23 @@ class AsyncRateLimiter:
 
                 if len(self._queue) < self._requests:
                     self._queue.append(now)
-                    return 0.0
+                    return waited
 
-                wait_time = self._queue[0] + self._per - now
-                if self._timeout is not None and wait_time > self._timeout:
-                    raise TimeoutError("Rate limit wait time exceeded timeout")
+                wait_time = max(self._queue[0] + self._per - now, 0.0)
+
+                if self._timeout is not None:
+                    elapsed = now - start
+                    remaining = self._timeout - elapsed
+                    if remaining <= 0 or wait_time > remaining:
+                        raise RateLimitTimeoutError(
+                            "Rate limiter acquire timed out",
+                            waited=elapsed,
+                            limit=self._requests,
+                            per_seconds=self._per,
+                        )
 
             await asyncio.sleep(wait_time)
+            waited = time.perf_counter() - start
 
     async def release(self) -> None:
         return None

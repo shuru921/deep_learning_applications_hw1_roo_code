@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 import xml.etree.ElementTree as ET
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
@@ -22,6 +24,7 @@ from ..errors import (
     PubMedHTTPError,
     PubMedParseError,
     PubMedRateLimitError,
+    RateLimitTimeoutError,
 )
 from ..utils.rate_limit import AsyncRateLimiter
 
@@ -101,6 +104,8 @@ class PubMedSummary:
     source: str | None
     pubdate: str | None
     raw: Mapping[str, Any] | None = None
+    metrics: Mapping[str, Any] = field(default_factory=dict)
+    warnings: Sequence[str] = field(default_factory=tuple)
 
 
 class PubMedWrapper:
@@ -116,12 +121,18 @@ class PubMedWrapper:
         email: str | None = None,
         max_retries: int = 3,
         retry_backoff: tuple[float, float] = (0.5, 2.0),
+        max_backoff: float | None = 10.0,
+        jitter: tuple[float, float] = (0.5, 1.5),
         logger: Any | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries 必須大於等於 0")
         if retry_backoff[0] <= 0 or retry_backoff[1] < 1:
             raise ValueError("retry_backoff 需為 (base_delay>0, multiplier>=1)")
+        if max_backoff is not None and max_backoff <= 0:
+            raise ValueError("max_backoff 若提供需大於 0")
+        if jitter[0] <= 0 or jitter[0] > jitter[1]:
+            raise ValueError("jitter 需滿足 0 < min <= max")
 
         self._client = async_client
         self._rate_limiter = rate_limiter
@@ -131,6 +142,8 @@ class PubMedWrapper:
         self._max_retries = max_retries
         self._base_backoff = retry_backoff[0]
         self._backoff_multiplier = retry_backoff[1]
+        self._max_backoff = max_backoff
+        self._jitter = jitter
         self._logger = logger or self._default_logger()
 
     async def warm_up(self) -> None:
@@ -139,15 +152,23 @@ class PubMedWrapper:
         try:
             async with self._rate_limiter.throttle():
                 await asyncio.sleep(0)
-        except TimeoutError as exc:  # pragma: no cover - 表現為配置錯誤
+        except RateLimitTimeoutError as exc:  # pragma: no cover - 表現為配置錯誤
             raise PubMedRateLimitError("Rate limiter 預熱失敗", cause=exc) from exc
 
     async def search(self, query: PubMedQuery) -> PubMedSearchResult:
         params = query.to_params()
-        response, metrics = await self._request(endpoint="esearch.fcgi", params=params)
+        response, metrics = await self._request(
+            endpoint="esearch.fcgi", params=params, expected="json"
+        )
+        raw_body = self._handle_response(
+            response,
+            expected="json",
+            request_id=metrics.get("request_id"),
+        )
+        decoder = response.encoding or "utf-8"
         try:
-            payload = response.json()
-        except json.JSONDecodeError as exc:  # pragma: no cover - httpx 已保證 json()
+            payload = json.loads(raw_body.decode(decoder))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise PubMedParseError("無法解析 PubMed 搜尋回應", cause=exc)
 
         search_info = payload.get("esearchresult", {})
@@ -195,8 +216,14 @@ class PubMedWrapper:
             "rettype": rettype,
             "retmode": retmode,
         }
-        response, metrics = await self._request("efetch.fcgi", params=params)
-        raw_bytes = response.content
+        response, metrics = await self._request(
+            "efetch.fcgi", params=params, expected="xml"
+        )
+        raw_bytes = self._handle_response(
+            response,
+            expected="xml",
+            request_id=metrics.get("request_id"),
+        )
         try:
             articles = tuple(self._parse_xml(raw_bytes))
         except PubMedParseError:
@@ -224,10 +251,18 @@ class PubMedWrapper:
             "id": ",".join(ids),
             "retmode": "json",
         }
-        response, metrics = await self._request("esummary.fcgi", params=params)
+        response, metrics = await self._request(
+            "esummary.fcgi", params=params, expected="json"
+        )
+        raw_body = self._handle_response(
+            response,
+            expected="json",
+            request_id=metrics.get("request_id"),
+        )
+        decoder = response.encoding or "utf-8"
         try:
-            payload = response.json()
-        except json.JSONDecodeError as exc:  # pragma: no cover
+            payload = json.loads(raw_body.decode(decoder))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:  # pragma: no cover
             raise PubMedParseError("無法解析 PubMed 摘要 JSON", cause=exc)
 
         result_map = payload.get("result", {})
@@ -237,6 +272,9 @@ class PubMedWrapper:
             if not entry:
                 continue
             authors = [a.get("name") for a in entry.get("authors", []) if a.get("name")]
+            warnings: list[str] = []
+            if not entry.get("title"):
+                warnings.append("missing_title")
             summaries.append(
                 PubMedSummary(
                     pmid=pid,
@@ -245,6 +283,8 @@ class PubMedWrapper:
                     source=entry.get("source"),
                     pubdate=entry.get("pubdate"),
                     raw=entry,
+                    metrics=metrics,
+                    warnings=tuple(warnings),
                 )
             )
 
@@ -262,40 +302,68 @@ class PubMedWrapper:
         self,
         endpoint: str,
         params: Mapping[str, Any],
+        expected: str | None = None,
     ) -> tuple[httpx.Response, Mapping[str, Any]]:
         url = f"{BASE_URL}{endpoint}"
-        merged_params = {**params}
-        if self._api_key:
-            merged_params["api_key"] = self._api_key
-        if self._tool_name:
-            merged_params["tool"] = self._tool_name
-        if self._email:
-            merged_params["email"] = self._email
+        merged_params = self._build_params(endpoint, params)
 
-        last_exc: Exception | None = None
-        total_wait = 0.0
+        metrics: dict[str, Any] = {
+            "retry_count": 0,
+            "rate_limit_wait": 0.0,
+            "waited": 0.0,
+            "request_id": None,
+            "expected": expected,
+        }
+
         for attempt in range(1, self._max_retries + 2):
             try:
-                async with self._rate_limiter.throttle() as waited:
-                    total_wait += waited
+                async with self._throttle() as waited:
+                    metrics["waited"] = waited
+                    metrics["rate_limit_wait"] += waited
                     start = time.perf_counter()
                     response = await self._client.get(url, params=merged_params)
-                    latency = time.perf_counter() - start
-                response.raise_for_status()
-                return response, {
-                    "latency": latency,
-                    "retry_count": attempt - 1,
-                    "rate_limit_wait": total_wait,
-                }
+                    metrics["latency"] = time.perf_counter() - start
+                    metrics["status_code"] = response.status_code
+                    metrics["request_id"] = response.headers.get("x-request-id")
+                    response.raise_for_status()
+                metrics["retry_count"] = attempt - 1
+                metrics["retry_events"] = tuple(metrics.get("retry_events", []))
+                metrics["backoff_schedule"] = tuple(metrics.get("backoff_schedule", []))
+                return response, metrics
+            except RateLimitTimeoutError as exc:
+                raise PubMedRateLimitError(
+                    "Rate limiter acquire timeout",
+                    detail={"endpoint": endpoint, "waited": exc.waited},
+                    cause=exc,
+                ) from exc
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 429:
-                    last_exc = exc
+                status = exc.response.status_code
+                metrics.setdefault("retry_events", []).append(
+                    {
+                        "attempt": attempt,
+                        "status": status,
+                        "retryable": status == 429 or 500 <= status < 600,
+                    }
+                )
+                if status == 429:
                     if attempt > self._max_retries:
                         raise PubMedRateLimitError(
                             "PubMed API 達到 Rate Limit",
                             detail={
                                 "endpoint": endpoint,
-                                "status": exc.response.status_code,
+                                "status": status,
+                                "request_id": metrics.get("request_id"),
+                            },
+                            cause=exc,
+                        ) from exc
+                elif 500 <= status < 600:
+                    if attempt > self._max_retries:
+                        raise PubMedHTTPError(
+                            "PubMed 服務暫時失效",
+                            detail={
+                                "endpoint": endpoint,
+                                "status": status,
+                                "request_id": metrics.get("request_id"),
                             },
                             cause=exc,
                         ) from exc
@@ -304,23 +372,83 @@ class PubMedWrapper:
                         "PubMed HTTP 狀態錯誤",
                         detail={
                             "endpoint": endpoint,
-                            "status": exc.response.status_code,
+                            "status": status,
+                            "request_id": metrics.get("request_id"),
                         },
                         cause=exc,
                     ) from exc
             except httpx.HTTPError as exc:
-                last_exc = exc
+                metrics.setdefault("retry_events", []).append(
+                    {"attempt": attempt, "error": type(exc).__name__}
+                )
                 if attempt > self._max_retries:
                     raise PubMedHTTPError(
                         "PubMed HTTP 請求失敗",
-                        detail={"endpoint": endpoint},
+                        detail={
+                            "endpoint": endpoint,
+                            "request_id": metrics.get("request_id"),
+                        },
                         cause=exc,
                     ) from exc
 
-            await asyncio.sleep(self._compute_backoff(attempt))
+            metrics["retry_count"] = attempt
+            backoff = self._compute_backoff(attempt)
+            metrics.setdefault("backoff_schedule", []).append(
+                {"attempt": attempt, "delay": backoff}
+            )
+            await asyncio.sleep(backoff)
 
-        assert last_exc is not None
-        raise PubMedError("PubMed 請求失敗", cause=last_exc)
+        raise PubMedError(
+            "PubMed 請求失敗",
+            detail={"endpoint": endpoint, "retry_count": metrics["retry_count"]},
+        )
+
+    def _build_params(
+        self, endpoint: str, payload: Mapping[str, Any]
+    ) -> MutableMapping[str, Any]:
+        params = {**payload}
+        if self._api_key:
+            params.setdefault("api_key", self._api_key)
+        if self._tool_name:
+            params.setdefault("tool", self._tool_name)
+        if self._email:
+            params.setdefault("email", self._email)
+        return params
+
+    @asynccontextmanager
+    async def _throttle(self) -> Any:
+        async with self._rate_limiter.throttle() as waited:
+            yield waited
+
+    def _handle_response(
+        self,
+        response: httpx.Response,
+        *,
+        expected: str | None = None,
+        request_id: str | None = None,
+    ) -> bytes:
+        content_type = response.headers.get("content-type", "").lower()
+        if expected == "json" and "json" not in content_type:
+            raise PubMedHTTPError(
+                "PubMed 回應 Content-Type 異常",
+                detail={
+                    "expected": "json",
+                    "actual": content_type,
+                    "request_id": request_id,
+                },
+                status_code=response.status_code,
+            )
+        if expected == "xml" and "xml" not in content_type:
+            raise PubMedHTTPError(
+                "PubMed 回應 Content-Type 異常",
+                detail={
+                    "expected": "xml",
+                    "actual": content_type,
+                    "request_id": request_id,
+                },
+                status_code=response.status_code,
+            )
+        return response.content
 
     def _parse_xml(self, raw: bytes) -> Iterable[PubMedArticle]:
         try:
@@ -379,7 +507,12 @@ class PubMedWrapper:
         return {element.tag: recurse(element)}
 
     def _compute_backoff(self, attempt: int) -> float:
-        return self._base_backoff * (self._backoff_multiplier ** (attempt - 1))
+        delay = self._base_backoff * (self._backoff_multiplier ** (attempt - 1))
+        if self._max_backoff is not None:
+            delay = min(delay, self._max_backoff)
+        jitter_min, jitter_max = self._jitter
+        jitter_scale = random.uniform(jitter_min, jitter_max)
+        return max(delay * jitter_scale, 0.0)
 
     def _log_event(self, event: str, payload: Mapping[str, Any]) -> None:
         if hasattr(self._logger, "bind"):

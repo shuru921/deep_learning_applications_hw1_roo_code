@@ -15,7 +15,7 @@ class ToolingError(Exception):
     cause: Exception | None = None
 
     def __post_init__(self) -> None:
-        super().__init__(self.message)
+        Exception.__init__(self, self.message)
 
     def to_payload(self) -> MutableMapping[str, Any]:
         payload: MutableMapping[str, Any] = {"message": self.message}
@@ -27,6 +27,20 @@ class ToolingError(Exception):
                 "message": str(self.cause),
             }
         return payload
+
+
+@dataclass(slots=True)
+class RateLimitError(ToolingError):
+    """Rate limit 行為相關錯誤。"""
+
+    waited: float | None = None
+    limit: int | None = None
+    per_seconds: float | None = None
+
+
+@dataclass(slots=True)
+class RateLimitTimeoutError(RateLimitError):
+    """Rate limiter 等待超時。"""
 
 
 @dataclass(slots=True)
