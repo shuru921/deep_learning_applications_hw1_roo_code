@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: mars_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: ${QDRANT_GRPC_PORT:-6334}
+      QDRANT__SERVICE__HTTP_PORT: ${QDRANT_PORT:-6333}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mars_net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: mars_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mars_net
+
+networks:
+  mars_net:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+  postgres_data:
