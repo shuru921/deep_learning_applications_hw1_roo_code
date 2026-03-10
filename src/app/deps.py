@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 from typing import TYPE_CHECKING, Callable
+import uuid
 
 from fastapi import Request
 
@@ -57,6 +58,19 @@ async def get_app_settings(request: Request) -> AppSettings:
     return request.app.state.app_settings
 
 
+async def get_correlation_id(request: Request) -> str:
+    """取得或生成本次請求所使用的 correlation ID。"""
+
+    existing: str | None = getattr(request.state, "correlation_id", None)
+    if existing:
+        return existing
+
+    header_id = request.headers.get("X-Correlation-ID")
+    correlation_id = header_id.strip() if header_id else str(uuid.uuid4())
+    request.state.correlation_id = correlation_id
+    return correlation_id
+
+
 def create_default_graph_factory() -> CompiledGraphFactory:
     """建立預設的 compiled graph 工廠函式。"""
 
@@ -74,4 +88,5 @@ __all__ = [
     "create_default_graph_factory",
     "get_graph_manager",
     "get_app_settings",
+    "get_correlation_id",
 ]

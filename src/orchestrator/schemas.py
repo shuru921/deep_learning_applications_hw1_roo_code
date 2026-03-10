@@ -259,6 +259,7 @@ class TelemetryState(OrchestratorBaseModel):
     tool_invocations: list[ToolCallMetric] = Field(default_factory=list)
     active_tasks: dict[str, TaskStatus] = Field(default_factory=dict)
     error_flags: list[ErrorSignal] = Field(default_factory=list)
+    correlation_id: str | None = None
 
 
 class FallbackState(OrchestratorBaseModel):

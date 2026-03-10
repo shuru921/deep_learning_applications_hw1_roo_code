@@ -51,9 +51,12 @@ class AppSettings:
 
     @classmethod
     def from_env(cls) -> "AppSettings":
-        ui_base_path = os.getenv("APP_UI_BASE_PATH", cls.ui_base_path)
-        static_base_path = os.getenv("APP_STATIC_BASE_PATH", cls.static_base_path)
-        api_base_path = os.getenv("APP_API_BASE_PATH", cls.api_base_path)
+        base_defaults = cls()
+        ui_base_path = os.getenv("APP_UI_BASE_PATH", base_defaults.ui_base_path)
+        static_base_path = os.getenv(
+            "APP_STATIC_BASE_PATH", base_defaults.static_base_path
+        )
+        api_base_path = os.getenv("APP_API_BASE_PATH", base_defaults.api_base_path)
         timeout_raw = os.getenv("APP_API_TIMEOUT_SECONDS")
         try:
             timeout = float(timeout_raw) if timeout_raw else cls.api_timeout_seconds
@@ -61,7 +64,9 @@ class AppSettings:
             timeout = cls.api_timeout_seconds
         allowed_origins_env = _split_env_list(os.getenv("APP_ALLOWED_ORIGINS"))
         allowed_origins = (
-            allowed_origins_env if allowed_origins_env else cls.allowed_origins
+            allowed_origins_env
+            if allowed_origins_env
+            else base_defaults.allowed_origins
         )
         enable_cors_raw = os.getenv("APP_ENABLE_CORS")
         enable_cors = (

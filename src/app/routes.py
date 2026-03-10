@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, Iterable
+import logging
+from datetime import datetime
+from typing import Any, AsyncIterator, Iterable, Mapping
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..orchestrator.schemas import LangGraphState
-from .deps import OrchestratorGraphManager, get_app_settings, get_graph_manager
+from .deps import (
+    OrchestratorGraphManager,
+    get_app_settings,
+    get_correlation_id,
+    get_graph_manager,
+)
+from .utils import ensure_correlation_id
 
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
@@ -36,7 +44,23 @@ def _deserialize_state(payload: dict[str, Any]) -> LangGraphState:
 
 
 def _encode_ndjson(data: dict[str, Any]) -> bytes:
-    return (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8")
+    return (json.dumps(_to_json_compatible(data), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _to_json_compatible(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, BaseModel):
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")  # type: ignore[attr-defined]
+        return value.dict()
+    if isinstance(value, Mapping):
+        return {key: _to_json_compatible(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_compatible(item) for item in value]
+    return value
 
 
 async def _graph_state_stream(
@@ -60,8 +84,26 @@ async def _stream_updates(
     request: Request,
     manager: OrchestratorGraphManager,
     payload: ResearchQuery,
+    *,
+    correlation_id: str,
+    scenario: str,
+    logger: logging.Logger,
 ) -> AsyncIterator[bytes]:
-    yield _encode_ndjson({"event": "start", "query": payload.query})
+    logger.info(
+        "stream start",
+        extra={
+            "correlation_id": correlation_id,
+            "event": "start",
+            "scenario": scenario,
+        },
+    )
+    yield _encode_ndjson(
+        {
+            "event": "start",
+            "query": payload.query,
+            "correlation_id": correlation_id,
+        }
+    )
 
     initial_state = LangGraphState()
     initial_state.user_query.raw_prompt = payload.query
@@ -69,12 +111,23 @@ async def _stream_updates(
         constraints = dict(getattr(initial_state.user_query, "constraints", {}))
         constraints["max_articles"] = payload.max_articles
         initial_state.user_query.constraints = constraints  # type: ignore[assignment]
+    ensure_correlation_id(initial_state, correlation_id)
 
     try:
         async for state in _graph_state_stream(
             manager,
             _serialize_state(initial_state),
         ):
+            ensure_correlation_id(state, correlation_id)
+            logger.info(
+                "stream update",
+                extra={
+                    "correlation_id": correlation_id,
+                    "event": "update",
+                    "scenario": scenario,
+                    "status": state.status,
+                },
+            )
             for update in state.ui.partial_updates:
                 if await request.is_disconnected():
                     return
@@ -86,10 +139,12 @@ async def _stream_updates(
                         "channel": update.channel,
                         "content": update.content,
                         "created_at": update.created_at.isoformat(),
+                        "correlation_id": correlation_id,
                     }
                 )
 
         summary_state = state
+        ensure_correlation_id(summary_state, correlation_id)
         telemetry_payload = (
             summary_state.telemetry.model_dump(mode="python")
             if hasattr(summary_state.telemetry, "model_dump")
@@ -113,10 +168,39 @@ async def _stream_updates(
                 "fallback": list(fallback_payload),
                 "telemetry": telemetry_payload,
                 "terminal_reason": summary_state.fallback.terminal_reason,
+                "correlation_id": correlation_id,
             }
         )
 
-        yield _encode_ndjson({"event": "complete", "status": summary_state.status})
+        logger.info(
+            "stream summary",
+            extra={
+                "correlation_id": correlation_id,
+                "event": "summary",
+                "scenario": scenario,
+                "status": summary_state.status,
+                "error_flags": [
+                    flag.code for flag in summary_state.telemetry.error_flags
+                ],
+                "fallback_events": len(summary_state.fallback.events),
+            },
+        )
+        logger.info(
+            "stream complete",
+            extra={
+                "correlation_id": correlation_id,
+                "event": "complete",
+                "scenario": scenario,
+                "status": summary_state.status,
+            },
+        )
+        yield _encode_ndjson(
+            {
+                "event": "complete",
+                "status": summary_state.status,
+                "correlation_id": correlation_id,
+            }
+        )
 
     except RuntimeError as exc:
         yield _encode_ndjson(
@@ -124,28 +208,40 @@ async def _stream_updates(
                 "event": "error",
                 "error": "graph_unavailable",
                 "message": str(exc),
+                "correlation_id": correlation_id,
             }
         )
     except Exception as exc:  # pragma: no cover - 外部依賴錯誤
+        if hasattr(exc, "exceptions"):
+            for idx, sub_exc in enumerate(getattr(exc, "exceptions", [])):
+                print(
+                    f"Sub-exception {idx}: {type(sub_exc).__name__} - {sub_exc}",
+                )
+        print(f"Main Error: {type(exc).__name__} - {exc}")
         yield _encode_ndjson(
             {
                 "event": "error",
                 "error": "execution_failed",
                 "message": str(exc),
+                "correlation_id": correlation_id,
             }
         )
 
 
-router = APIRouter()
+api_router = APIRouter()
+ui_router = APIRouter()
 
 
 def include_routes(app: FastAPI, *, settings: Any | None = None) -> None:
     """將此模組的路由掛載至 FastAPI 應用。"""
 
-    app.include_router(router, prefix=settings.api_base_path if settings else "")
+    api_prefix = settings.api_base_path if settings else ""
+    ui_prefix = settings.ui_base_path if settings else ""
+    app.include_router(api_router, prefix=api_prefix)
+    app.include_router(ui_router, prefix=ui_prefix)
 
 
-@router.get("/ui", response_class=HTMLResponse)
+@ui_router.get("", response_class=HTMLResponse)
 async def render_ui(
     request: Request,
     settings=Depends(get_app_settings),
@@ -161,26 +257,46 @@ async def render_ui(
     )
 
 
-@router.post("/api/research")
+@api_router.post("/research")
 async def api_research(
     request: Request,
     payload: ResearchQuery,
     manager: OrchestratorGraphManager = Depends(get_graph_manager),
+    correlation_id: str = Depends(get_correlation_id),
 ):
-    stream = _stream_updates(request, manager, payload)
-    return StreamingResponse(stream, media_type=NDJSON_MEDIA_TYPE)
+    logger = logging.getLogger("app.stream")
+    stream = _stream_updates(
+        request,
+        manager,
+        payload,
+        correlation_id=correlation_id,
+        scenario="api",
+        logger=logger,
+    )
+    headers = {"X-Correlation-ID": correlation_id}
+    return StreamingResponse(stream, media_type=NDJSON_MEDIA_TYPE, headers=headers)
 
 
-@router.post("/ui/query")
+@ui_router.post("/query")
 async def ui_query(
     request: Request,
     query: str = Form(...),
     max_articles: int | None = Form(default=None),
     manager: OrchestratorGraphManager = Depends(get_graph_manager),
+    correlation_id: str = Depends(get_correlation_id),
 ):
     payload = ResearchQuery(query=query, max_articles=max_articles)
-    stream = _stream_updates(request, manager, payload)
-    return StreamingResponse(stream, media_type=NDJSON_MEDIA_TYPE)
+    logger = logging.getLogger("app.stream")
+    stream = _stream_updates(
+        request,
+        manager,
+        payload,
+        correlation_id=correlation_id,
+        scenario="ui",
+        logger=logger,
+    )
+    headers = {"X-Correlation-ID": correlation_id}
+    return StreamingResponse(stream, media_type=NDJSON_MEDIA_TYPE, headers=headers)
 
 
-__all__ = ["include_routes", "router"]
+__all__ = ["include_routes", "api_router", "ui_router"]

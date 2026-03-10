@@ -256,9 +256,14 @@ def _finalize_tool_metric(
         finished - invocation.metric.started_at
     ).total_seconds() * 1000
     invocation.task_status.finished_at = finished
-    invocation.task_status.status = (
-        "completed" if status == "success" else status  # type: ignore[assignment]
-    )
+    status_mapping: dict[str, str] = {
+        "success": "completed",
+        "warning": "degraded",
+        "error": "failed",
+        "timeout": "timeout",
+        "cancelled": "cancelled",
+    }
+    invocation.task_status.status = status_mapping.get(status, status)
 
 
 def _record_tool_telemetry(
@@ -1200,6 +1205,7 @@ async def final_responder_node(
     state.telemetry.tool_invocations.append(
         ToolCallMetric(tool="orchestrator", action="respond", status="success")
     )
+    state.touch()
     state.status = status
     state.touch()
     return state
