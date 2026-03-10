@@ -18,6 +18,7 @@ from src.app.deps import (
     get_correlation_id,
     get_graph_manager,
 )
+from tests.test_orchestrator import StubPubMedSuccess, StubQdrantSuccess
 from src.app.routes import NDJSON_MEDIA_TYPE
 from src.errors import QdrantError
 from src.orchestrator.graph import (
@@ -35,7 +36,7 @@ async def _collect_ndjson_stream(response: httpx.Response) -> list[dict[str, Any
             continue
         data = json.loads(line)
         if data.get("event") == "error":
-            print(f"\n--- Stream Error Details ---")
+            print("\n--- Stream Error Details ---")
             print(f"Error: {data.get('error')}, Message: {data.get('message')}")
         events.append(data)
     return events
@@ -229,3 +230,63 @@ async def test_ui_query_qdrant_degraded(
             if getattr(record, "event", "") == "complete"
         ]
         assert complete_logs and complete_logs[0].status == "degraded"
+
+
+@pytest.mark.anyio
+async def test_api_research_reuses_compiled_graph_across_requests(
+    stub_pubmed_success: StubPubMedSuccess,
+    stub_qdrant_success: StubQdrantSuccess,
+) -> None:
+    build_count = 0
+
+    def _factory() -> Any:
+        nonlocal build_count
+        build_count += 1
+        return build_medical_research_graph(
+            dependencies=OrchestratorDependencies(
+                pubmed=stub_pubmed_success,
+                qdrant=stub_qdrant_success,
+            )
+        )
+
+    manager = OrchestratorGraphManager(_factory)
+    app = create_app()
+
+    async def _override_graph_manager() -> OrchestratorGraphManager:
+        return manager
+
+    app.dependency_overrides[get_graph_manager] = _override_graph_manager
+
+    transport = ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            for attempt in range(2):
+                response = await client.post(
+                    "/api/research",
+                    json={"query": f"免疫療法 臨床摘要 {attempt}"},
+                    headers={
+                        "Accept": NDJSON_MEDIA_TYPE,
+                        "Content-Type": "application/json",
+                    },
+                )
+                assert response.status_code == 200
+                events = await _collect_ndjson_stream(response)
+                assert events[-1]["event"] == "complete"
+
+    finally:
+        app.dependency_overrides.clear()
+
+    assert build_count == 1, "OrchestratorGraphManager factory 應僅建立一次 graph"
+    assert manager._graph is not None
+
+
+@pytest.mark.anyio
+async def test_ui_index_smoke(async_client: httpx.AsyncClient) -> None:
+    response = await async_client.get("/ui")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="research-form"' in body
+    assert 'id="stream-log"' in body
+    assert 'id="telemetry-log"' in body

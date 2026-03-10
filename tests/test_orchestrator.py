@@ -8,7 +8,6 @@ from typing import Any, Mapping
 
 import pytest
 
-from src.errors import PubMedEmptyResult
 from src.orchestrator.graph import (
     OrchestratorConfig,
     OrchestratorDependencies,
