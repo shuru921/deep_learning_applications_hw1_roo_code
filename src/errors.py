@@ -13,6 +13,9 @@ class ToolingError(Exception):
     message: str
     detail: Mapping[str, Any] | None = None
     cause: Exception | None = None
+    error_code: str = "tooling_error"
+    fallback_hint: str | None = None
+    status_code: int = 500
 
     def __post_init__(self) -> None:
         Exception.__init__(self, self.message)
@@ -26,6 +29,11 @@ class ToolingError(Exception):
                 "type": type(self.cause).__name__,
                 "message": str(self.cause),
             }
+        if self.error_code:
+            payload["error_code"] = self.error_code
+        if self.fallback_hint:
+            payload["fallback"] = self.fallback_hint
+        payload["status_code"] = self.status_code
         return payload
 
 
@@ -47,6 +55,7 @@ class RateLimitTimeoutError(RateLimitError):
 class PubMedError(ToolingError):
     request_id: str | None = None
     status_code: int | None = None
+    error_code: str = "pubmed_error"
 
 
 @dataclass(slots=True)
@@ -73,6 +82,7 @@ class PubMedEmptyResult(PubMedError):
 class QdrantError(ToolingError):
     operation: str | None = None
     collection: str | None = None
+    error_code: str = "qdrant_error"
 
 
 @dataclass(slots=True)
