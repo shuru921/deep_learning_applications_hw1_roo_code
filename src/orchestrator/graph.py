@@ -14,6 +14,7 @@ import hashlib
 import logging
 import math
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal, Mapping, MutableMapping, Sequence
@@ -319,8 +320,10 @@ async def _call_tool(
 
 
 def _activate_node(state: LangGraphState, node_name: str) -> None:
+    print(f"--- [DEBUG] Node Executing: {node_name} ---")
     state.current_node = node_name
     state.status = "running"
+    state.ui.partial_updates = []
 
 
 def _normalize_terms(prompt: str) -> list[str]:
@@ -375,6 +378,9 @@ async def planner_node(state_in: StateInput, ctx: NodeContext) -> LangGraphState
             )
         )
         state.planning.plan_steps = steps
+    state.ui.partial_updates.append(
+        StreamUpdate(segment="planner", content=f"已制定研究計畫，預計執行 {len(state.planning.plan_steps)} 個步驟。")
+    )
 
     query_terms = state.user_query.normalized_terms or [state.user_query.raw_prompt]
     search_term = " ".join(query_terms).strip() or state.user_query.raw_prompt
@@ -400,7 +406,14 @@ async def planner_node(state_in: StateInput, ctx: NodeContext) -> LangGraphState
     if state.retry_counters.get("planner", 0) != state.planning.iteration:
         state.retry_counters["planner"] = state.planning.iteration
 
-    logger.debug("planner prepared query", extra={"term": search_term})
+    logger.info(
+        "Planner node executed",
+        extra={
+            "iteration": state.planning.iteration,
+            "search_term": search_term,
+            "retry_count": state.pubmed.empty_retry_count
+        }
+    )
     state.touch()
     return state
 
@@ -424,6 +437,8 @@ async def pubmed_search_node(state_in: StateInput, ctx: NodeContext) -> LangGrap
         )
         state.fallback.terminal_reason = "pubmed-unavailable"
         state.status = "degraded"
+        # 增加重試計數以觸發 fallback 分支，防止無限迴圈
+        state.pubmed.empty_retry_count = 999
         state.touch()
         return state
 
@@ -436,6 +451,10 @@ async def pubmed_search_node(state_in: StateInput, ctx: NodeContext) -> LangGrap
         state.pubmed.query_history.append(
             PubMedQueryLog(query=latest_query, status="pending")
         )
+
+    state.ui.partial_updates.append(
+        StreamUpdate(segment="pubmed_search", content=f"正在搜尋 PubMed 文獻：{latest_query.term}...")
+    )
 
     invocation = await _call_tool(
         state,
@@ -591,6 +610,9 @@ async def pubmed_search_node(state_in: StateInput, ctx: NodeContext) -> LangGrap
 
     state.pubmed.results = documents
     state.pubmed.empty_retry_count = 0
+    state.ui.partial_updates.append(
+        StreamUpdate(segment="pubmed_search", content=f"文獻檢索完成，共取得 {len(documents)} 篇內容。")
+    )
 
     if details.warnings:
         _append_error_flag(
@@ -640,16 +662,13 @@ async def result_normalizer_node(
 ) -> LangGraphState:
     state = _ensure_state(state_in)
     _activate_node(state, "result_normalizer")
+    state.ui.partial_updates.append(
+        StreamUpdate(segment="normalizer", content="正在進行資料正規化與向量預處理...")
+    )
     logger = ctx.logger()
 
     if not state.pubmed.results:
-        _append_error_flag(
-            state,
-            source="normalizer",
-            code="no-pubmed-results",
-            message="缺少 PubMed 結果，無法進行整理",
-            severity="warning",
-        )
+        # 如果沒有內容可以處理，直接返回，確保分支邏輯能正確轉向 retry 或 fallback
         state.touch()
         return state
 
@@ -661,7 +680,12 @@ async def result_normalizer_node(
 
     for idx, doc in enumerate(state.pubmed.results[: ctx.config.max_context_chunks]):
         content = "\n".join(filter(None, [doc.title, doc.abstract or ""])).strip()
-        chunk_id = f"pmid-{doc.pmid}-{idx}"
+        
+        # Qdrant 要求 64 位元整數或 UUID
+        # 我們使用 uuid5 (namespace DNS) 與 PMID 結合產生穩定的 UUID
+        chunk_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, f"pmid-{doc.pmid}-{idx}")
+        chunk_id = str(chunk_uuid)
+        
         chunk = ContextChunk(
             chunk_id=chunk_id,
             content=content,
@@ -884,6 +908,8 @@ async def qdrant_search_node(
 
         def apply_missing(target: LangGraphState) -> None:
             target.telemetry.error_flags.extend(new_error_flags)
+            # 標記 Qdrant 狀態為不可用，避免在批判環節無限重試
+            target.qdrant.health = "unavailable"
 
         return apply_missing
 
@@ -1217,11 +1243,22 @@ def _pubmed_branch(state: StateInput, ctx: NodeContext) -> Literal[
     "fallback",
 ]:
     current = _ensure_state(state)
+    logger = ctx.logger()
+    
     if current.pubmed.results:
+        logger.info("PubMed Branch: continue (results found)")
         return "continue"
-    if current.pubmed.empty_retry_count > ctx.config.pubmed_empty_threshold:
-        return "fallback"
-    return "retry"
+        
+    retry_count = current.pubmed.empty_retry_count
+    
+    # 核心邏輯修改：如果沒有結果且重試次數少於 3 次，則回 planner (retry)
+    if retry_count < 3:
+        logger.info(f"PubMed Branch: retry (count: {retry_count}, iteration: {current.planning.iteration})")
+        return "retry"
+    
+    # 超過 3 次強制進入降級 (fallback)
+    logger.warning(f"PubMed Branch: fallback (retry limit 3 reached, current: {retry_count})")
+    return "fallback"
 
 
 def _critic_branch(state: StateInput, ctx: NodeContext) -> Literal[

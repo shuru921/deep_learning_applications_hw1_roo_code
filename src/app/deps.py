@@ -14,7 +14,13 @@ from ..orchestrator.graph import (
     OrchestratorDependencies,
     build_medical_research_graph,
 )
-from ..settings import AppSettings
+from ..settings import AppSettings, PubMedSettings, QdrantSettings
+from ..clients.pubmed_wrapper import PubMedWrapper
+from ..clients.qdrant_wrapper import QdrantWrapper
+from ..utils.rate_limit import AsyncRateLimiter, RateLimitConfig
+import httpx
+import os
+from qdrant_client.async_qdrant_client import AsyncQdrantClient
 
 
 if TYPE_CHECKING:  # pragma: no cover - 僅供型別檢查
@@ -72,10 +78,56 @@ async def get_correlation_id(request: Request) -> str:
 
 
 def create_default_graph_factory() -> CompiledGraphFactory:
-    """建立預設的 compiled graph 工廠函式。"""
+    """建立預設的 compiled graph 工廠函式，包含真實客戶端。"""
 
-    dependencies = OrchestratorDependencies()
-    config = OrchestratorConfig()
+    # 讀取 PubMed 設定
+    pubmed_api_key = os.getenv("PUBMED_API_KEY")
+    pubmed_email = os.getenv("PUBMED_EMAIL")
+    pubmed_settings = PubMedSettings(
+        api_key=pubmed_api_key,
+        email=pubmed_email,
+        rate_requests=int(os.getenv("PUBMED_RATE_LIMIT", "3")),
+    )
+
+    # 建立 httpx 客戶端與 Rate Limiter
+    async_client = httpx.AsyncClient(timeout=30.0)
+    rate_limiter = AsyncRateLimiter(RateLimitConfig(
+        requests=pubmed_settings.rate_requests,
+        per_seconds=1.0,
+        timeout=2.0
+    ))
+
+    pubmed_wrapper = PubMedWrapper(
+        async_client=async_client,
+        rate_limiter=rate_limiter,
+        api_key=pubmed_settings.api_key,
+        email=pubmed_settings.email,
+    )
+
+    # 讀取 Qdrant 設定
+    qdrant_settings = QdrantSettings(
+        host=os.getenv("QDRANT_HOST", "localhost"),
+        port=int(os.getenv("QDRANT_PORT", "6333")),
+    )
+    qdrant_client = AsyncQdrantClient(
+        host=qdrant_settings.host,
+        port=qdrant_settings.port,
+    )
+    qdrant_wrapper = QdrantWrapper(
+        client=qdrant_client,
+        collection=qdrant_settings.collection_name,
+        vector_size=qdrant_settings.vector_size,
+        distance=qdrant_settings.distance.capitalize(),  # 使用首字母大寫以相容 Enum ('Cosine')
+    )
+
+    dependencies = OrchestratorDependencies(
+        pubmed=pubmed_wrapper,
+        qdrant=qdrant_wrapper,
+    )
+    config = OrchestratorConfig(
+        pubmed_settings=pubmed_settings,
+        qdrant_settings=qdrant_settings,
+    )
     return partial(
         build_medical_research_graph,
         dependencies=dependencies,

@@ -12,7 +12,10 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence, TypeVa
 try:  # pragma: no cover - 測試環境可能未安裝 qdrant-client
     from qdrant_client.async_qdrant_client import AsyncQdrantClient
     from qdrant_client.http import models as rest_models
-    from qdrant_client.http.exceptions import QdrantClientException
+    try:
+        from qdrant_client.http.exceptions import QdrantClientException
+    except ImportError:
+        from qdrant_client.http.exceptions import UnexpectedResponse as QdrantClientException
 except ModuleNotFoundError:  # pragma: no cover
 
     class AsyncQdrantClient:  # type: ignore[empty-body]
@@ -182,7 +185,7 @@ class QdrantWrapper:
         self._payload_schema = payload_schema or {}
         self._max_batch_size = max_batch_size
         self._timeout = timeout
-        self._consistency = rest_models.WriteConsistency(consistency)
+        self._consistency = getattr(rest_models, "WriteConsistency", lambda x: x)(consistency)
         self._logger = logger or self._default_logger()
         self._max_retries = max_retries
         self._base_backoff = retry_backoff[0]
@@ -207,8 +210,23 @@ class QdrantWrapper:
                 metrics=metrics,
             )
             self._validate_collection(existing, target)
-        except QdrantClientException as exc:
-            if getattr(exc, "status_code", None) == 404:
+        except Exception as exc:
+            # 某些版本的 qdrant-client 可能丟出不同類型的 404 例外，或是被 _map_exception 封裝
+            is_404 = False
+            error_str = str(exc).lower()
+            
+            # 檢查原始例外屬性
+            if hasattr(exc, "status_code") and getattr(exc, "status_code") == 404:
+                is_404 = True
+            # 檢查封裝過的 QdrantError (由 _map_exception 產生)
+            elif hasattr(exc, "detail") and isinstance(exc.detail, dict) and exc.detail.get("status") == 404:
+                is_404 = True
+            # 檢查字串特徵
+            elif "404" in error_str or "not found" in error_str:
+                is_404 = True
+                
+            if is_404:
+                print(f"--- [DEBUG] Collection '{target.name}' not found, creating... ---")
                 metrics_retry: dict[str, Any] = {"operation": "create_collection"}
                 await self._run_with_retry(
                     lambda: self._create_collection(target),
@@ -245,6 +263,7 @@ class QdrantWrapper:
         if not records:
             return QdrantUpsertResult(processed=0)
 
+        await self.ensure_collection()
         total = 0
         failures: list[Mapping[str, Any]] = []
         start = time.perf_counter()
@@ -255,9 +274,9 @@ class QdrantWrapper:
         for chunk in self._chunk_records(records):
             payload = [
                 rest_models.PointStruct(
-                    id=record.id,
-                    vector=self._validate_vector(record.vector),
-                    payload=self._validate_payload(record.payload),
+                    id=record["id"],
+                    vector=self._validate_vector(record["vector"]),
+                    payload=self._validate_payload(record["payload"]),
                 )
                 for record in chunk
             ]
@@ -271,7 +290,6 @@ class QdrantWrapper:
                         collection_name=self._collection,
                         wait=True,
                         points=payload,
-                        write_consistency=self._consistency,
                     ),
                     operation="upsert",
                     payload={
@@ -291,7 +309,7 @@ class QdrantWrapper:
             except QdrantError as error:
                 failures.extend(
                     {
-                        "id": record.id,
+                        "id": record["id"],
                         "error": type(error).__name__,
                         "detail": error.to_payload(),
                     }
@@ -333,10 +351,10 @@ class QdrantWrapper:
             "limit": request.limit,
         }
         try:
-            result = await self._run_with_retry(
-                lambda: self._client.search(
+            response = await self._run_with_retry(
+                lambda: self._client.query_points(
                     collection_name=self._collection,
-                    query_vector=request.vector,
+                    query=request.vector,
                     query_filter=request.filter,
                     limit=request.limit,
                     with_payload=request.with_payload,
@@ -360,6 +378,10 @@ class QdrantWrapper:
             raise exc
 
         took = time.perf_counter() - start
+        
+        # 處理 query_points 的回傳格式
+        points = getattr(response, "points", [])
+        
         normalized_metrics = _normalize_metrics(metrics)
         result_metrics = {"latency": took, **normalized_metrics}
         result_metrics.setdefault("warnings", tuple())
@@ -367,13 +389,13 @@ class QdrantWrapper:
             "qdrant.query",
             {
                 "collection": self._collection,
-                "returned": len(result),
+                "returned": len(points),
                 "took_ms": took * 1000,
                 "retry_count": normalized_metrics.get("retry_count", 0),
             },
         )
         return QdrantQueryResult(
-            points=tuple(result),
+            points=tuple(points),
             metrics=result_metrics,
         )
 

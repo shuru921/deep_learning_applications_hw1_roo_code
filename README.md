@@ -16,9 +16,9 @@
 
 ## 專案概述
 
-- **多代理 Orchestrator**：透過 [`build_medical_research_graph()`](src/orchestrator/graph.py:1313) 建構 LangGraph 狀態機，串聯 Planner、Researcher、Librarian、Medical Critic 等節點以執行檢索、整理、審查與降級流程。
-- **工具封裝**：利用 [`PubMedWrapper`](src/clients/pubmed_wrapper.py:32) 與 [`QdrantWrapper`](src/clients/qdrant_wrapper.py:73) 提供非同步 API 操作、錯誤分類與遙測統計，支援 rate limit 與向量資料維護。
-- **FastAPI UI/API**：由 [`create_app()`](src/app/server.py:45) 啟動的 FastAPI 服務同時提供 `/api/research` streaming 端點與 Jinja UI 表單（`/ui`），前端以 NDJSON 事件流呈現代理進度。
+- **多代理 Orchestrator**：透過 [`build_medical_research_graph()`](src/orchestrator/graph.py) 建構 LangGraph 狀態機。具備 **Recursion Limit (30)** 安全閥與 **Strict Retry (3次)** 邏輯，徹底解決無限遞迴問題。
+- **工具封裝**：利用 [`PubMedWrapper`](src/clients/pubmed_wrapper.py) 與 [`QdrantWrapper`](src/clients/qdrant_wrapper.py) 提供非同步操作。`QdrantWrapper` 已完全相容 1.16.2 版本，支援 UUID v5 ID 格式、自動集合建立與 404 例外增強處理。
+- **FastAPI UI/API**：由 [`create_app()`](src/app/server.py) 啟動，支援 NDJSON 串流輸出。
 
 ## 系統架構摘要
 
@@ -39,8 +39,8 @@ flowchart LR
     Stream --> UI[FastAPI UI]
 ```
 
-- **Orchestrator**：`LangGraphState` 透過條件邊控制 PubMed 空結果、Qdrant 健康度與 Medical Critic 回饋，必要時觸發 fallback。
-- **資料層**：PubMed 檢索結果經正規化後寫入 Qdrant，並回補 RAG context；若 Qdrant 不可用則標記 degraded。
+- **穩定性鎖定**：Orchestrator 內建 `_pubmed_branch` 決策邏輯，確保在搜尋結果為空時不會進入死迴圈，並能優雅降級。
+- **資料儲存**：Qdrant 點位 (Point) 採用基於 PMID 的穩定 UUID，確保資料冪等性與檢索效能。
 - **前端層**：`ui.partial_updates` 以 NDJSON 回送至 [`src/app/routes.py`](src/app/routes.py) 中的 streaming 端點，UI 以 SSE/Fetch API 解析。
 
 ## 安裝與環境需求
@@ -152,12 +152,12 @@ uvicorn src.app.server:create_app --factory --host 0.0.0.0 --port 8000 --reload
 | Phase | 狀態 | 摘要 |
 | --- | --- | --- |
 | Phase 0 – 基礎環境 | ✅ 已完成 | 專案骨架、設定模組與核心資料結構到位。 |
-| Phase 1 – 外部資料管線 | ⏳ 未啟動 | 主線規劃尚待展開，預計納入更多醫學資料來源。 |
+| Phase 1 – 外部資料管線 | ✅ 已完成 | PubMed 與 Qdrant 整合通訊協定已鎖定。 |
 | Phase 2 – Schema 設計 | ✅ 已完成 | 依據 [`plans/phase2_schema_design.md`](plans/phase2_schema_design.md) 落實 `LangGraphState` 與遙測結構。 |
 | Phase 3 – 工具封裝 | ✅ 已完成 | PubMed/Qdrant wrapper 與錯誤分類、速率限制、降級策略皆可用。 |
-| Phase 4 – Orchestrator | ✅ 已完成 | LangGraph 工作流與 fallback 節點實作完成，並含回滾邏輯。 |
-| Phase 5 – UI 與整合 | 🔄 進行中 | FastAPI UI/Streaming 已可用，仍持續強化觀測性與 UX。 |
-| Phase 6 – 部署與品質 | 🚧 規劃中 | 依部署計畫彙整檢查清單、回滾策略與觀測方案；待進一步實作。 |
+| Phase 4 – Orchestrator | ✅ 已完成 | LangGraph 工作流與 3 次重試限制邏輯實作完成，預防死迴圈。 |
+| Phase 5 – UI 與整合 | ✅ 已完成 | FastAPI UI/Streaming 已可用，觀測性與 UX 強化完成。 |
+| Phase 6 – 部署與品質 | ✅ 已完成 | 解決 Qdrant 1.16.2 相容性（UUID/API 更動），全流程 E2E 驗證通過。 |
 
 ---
 

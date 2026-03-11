@@ -1,0 +1,45 @@
+INFO:     Will watch for changes in these directories: ['/Users/ruby/Desktop/課程投影片2/深度學習應用/deep_learning_applications_hw1_roo_code']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [98364] using WatchFiles
+INFO:     Started server process [98477]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53237 - "POST /api/research HTTP/1.1" 200 OK
+2026-03-11 13:42:15,671 INFO pubmed.wrapper pubmed.search {'term': 'diabetes', 'ids': ['32741486', '35771962', '35146976', '32383239', '34238458'], 'count': 1105586, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 1.2331574580166489, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:42:16,416 INFO pubmed.wrapper pubmed.fetch_details {'requested': 12, 'parsed': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'xml', 'latency': 0.737175083020702, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:42:16,514 INFO pubmed.wrapper pubmed.fetch_summaries {'requested': 12, 'returned': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 0.8405082910030615, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:42:16,577 INFO qdrant.wrapper qdrant.ensure_collection {'collection': 'medical_articles', 'action': 'validated', 'operation': 'describe', 'retry_events': (), 'backoff_schedule': (), 'retry_count': 0}
+2026-03-11 13:42:16,589 INFO qdrant.wrapper qdrant.query {'collection': 'medical_articles', 'returned': 0, 'took_ms': 44.61074998835102, 'retry_count': 0}
+2026-03-11 13:42:16,621 INFO qdrant.wrapper qdrant.upsert {'collection': 'medical_articles', 'processed': 8, 'failed': 0, 'took_ms': 43.89641698799096, 'retry_count': 0}
+--- [DEBUG] Node Executing: planner ---
+--- [DEBUG] Node Executing: pubmed_search ---
+--- [DEBUG] Node Executing: result_normalizer ---
+--- [DEBUG] Node Executing: qdrant_parallel ---
+--- [DEBUG] Node Executing: rag_synthesizer ---
+--- [DEBUG] Node Executing: medical_critic ---
+--- [DEBUG] Node Executing: fallback ---
+--- [DEBUG] Node Executing: final_responder ---
+INFO:     127.0.0.1:53306 - "GET /ui HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53306 - "GET /static/main.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:53306 - "POST /ui/query HTTP/1.1" 200 OK
+2026-03-11 13:43:11,885 INFO pubmed.wrapper pubmed.search {'term': 'what are the latest treatments for type 2 diabetes?', 'ids': ['38965663', '34131333', '37130947', '36965839', '37037849'], 'count': 777, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 1.0343202090007253, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:43:12,691 INFO pubmed.wrapper pubmed.fetch_summaries {'requested': 12, 'returned': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 0.8024975000007544, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:43:12,976 INFO pubmed.wrapper pubmed.fetch_details {'requested': 12, 'parsed': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'xml', 'latency': 1.062734792008996, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:43:13,025 INFO qdrant.wrapper qdrant.ensure_collection {'collection': 'medical_articles', 'action': 'validated', 'operation': 'describe', 'retry_events': (), 'backoff_schedule': (), 'retry_count': 0}
+2026-03-11 13:43:13,036 INFO qdrant.wrapper qdrant.query {'collection': 'medical_articles', 'returned': 8, 'took_ms': 24.485165980877355, 'retry_count': 0}
+2026-03-11 13:43:13,052 INFO qdrant.wrapper qdrant.upsert {'collection': 'medical_articles', 'processed': 8, 'failed': 0, 'took_ms': 26.909625012194738, 'retry_count': 0}
+--- [DEBUG] Node Executing: planner ---
+--- [DEBUG] Node Executing: pubmed_search ---
+--- [DEBUG] Node Executing: result_normalizer ---
+--- [DEBUG] Node Executing: qdrant_parallel ---
+--- [DEBUG] Node Executing: rag_synthesizer ---
+--- [DEBUG] Node Executing: medical_critic ---
+--- [DEBUG] Node Executing: fallback ---
+--- [DEBUG] Node Executing: final_responder ---
+INFO:     127.0.0.1:53408 - "POST /api/research HTTP/1.1" 200 OK
+2026-03-11 13:45:03,031 INFO pubmed.wrapper pubmed.search {'term': 'what are the latest treatments for type 2 diabetes?', 'ids': ['38965663', '34131333', '37130947', '36965839', '37037849'], 'count': 777, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 1.3473510409821756, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:45:03,915 INFO pubmed.wrapper pubmed.fetch_summaries {'requested': 12, 'returned': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 0.8822111250192393, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:45:04,160 INFO pubmed.wrapper pubmed.fetch_details {'requested': 12, 'parsed': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'xml', 'latency': 1.0057903330016416, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:45:04,331 INFO qdrant.wrapper qdrant.ensure_collection {'collection': 'medical_articles', 'action': 'validated', 'operation': 'describe', 'retry_events': (), 'backoff_schedule': (), 'retry_count': 0}
+2026-03-11 13:45:04,342 INFO qdrant.wrapper qdrant.query {'collection': 'medical_articles', 'returned': 8, 'took_ms': 27.375167002901435, 'retry_count': 0}
+2026-03-11 13:45:04,358 INFO qdrant.wrapper qdrant.upsert {'collection': 'medical_articles', 'processed': 8, 'failed': 0, 'took_ms': 26.904291997198015, 'retry_count': 0}

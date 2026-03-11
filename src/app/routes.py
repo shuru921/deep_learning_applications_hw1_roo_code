@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, AsyncIterator, Iterable, Mapping
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from ..orchestrator.schemas import LangGraphState
@@ -70,10 +70,24 @@ async def _graph_state_stream(
     graph = await manager.get_graph()
 
     if hasattr(graph, "astream"):
-        async for snapshot in graph.astream(state_payload):  # type: ignore[attr-defined]
-            if not isinstance(snapshot, dict):
-                continue
-            yield _deserialize_state(snapshot)
+        async for snapshot in graph.astream(state_payload, config={"recursion_limit": 30}):  # type: ignore[attr-defined]
+            if isinstance(snapshot, dict):
+                # LangGraph astream (updates mode) returns {node_name: state_update}
+                # We iterate over values to get the actual state dicts
+                for value in snapshot.values():
+                    if isinstance(value, dict):
+                        try:
+                            yield _deserialize_state(value)
+                        except Exception:
+                            continue
+            elif isinstance(snapshot, (list, tuple)):
+                # Handle potential list of states
+                for item in snapshot:
+                    if isinstance(item, dict):
+                        try:
+                            yield _deserialize_state(item)
+                        except Exception:
+                            continue
         return
 
     result = await graph.ainvoke(state_payload)
@@ -240,6 +254,10 @@ def include_routes(app: FastAPI, *, settings: Any | None = None) -> None:
     app.include_router(api_router, prefix=api_prefix)
     app.include_router(ui_router, prefix=ui_prefix)
 
+    @app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+    async def chrome_devtools():
+        return JSONResponse(content={})
+
 
 @ui_router.get("", response_class=HTMLResponse)
 async def render_ui(
@@ -255,6 +273,14 @@ async def render_ui(
             "static_base": settings.static_base_path,
         },
     )
+
+
+@ui_router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return HTMLResponse("")
+
+
+
 
 
 @api_router.post("/research")
