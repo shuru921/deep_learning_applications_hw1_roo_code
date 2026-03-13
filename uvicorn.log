@@ -43,3 +43,18 @@ INFO:     127.0.0.1:53408 - "POST /api/research HTTP/1.1" 200 OK
 2026-03-11 13:45:04,331 INFO qdrant.wrapper qdrant.ensure_collection {'collection': 'medical_articles', 'action': 'validated', 'operation': 'describe', 'retry_events': (), 'backoff_schedule': (), 'retry_count': 0}
 2026-03-11 13:45:04,342 INFO qdrant.wrapper qdrant.query {'collection': 'medical_articles', 'returned': 8, 'took_ms': 27.375167002901435, 'retry_count': 0}
 2026-03-11 13:45:04,358 INFO qdrant.wrapper qdrant.upsert {'collection': 'medical_articles', 'processed': 8, 'failed': 0, 'took_ms': 26.904291997198015, 'retry_count': 0}
+--- [DEBUG] Node Executing: planner ---
+--- [DEBUG] Node Executing: pubmed_search ---
+--- [DEBUG] Node Executing: result_normalizer ---
+--- [DEBUG] Node Executing: qdrant_parallel ---
+--- [DEBUG] Node Executing: rag_synthesizer ---
+--- [DEBUG] Node Executing: medical_critic ---
+--- [DEBUG] Node Executing: fallback ---
+--- [DEBUG] Node Executing: final_responder ---
+INFO:     127.0.0.1:53558 - "POST /ui/query HTTP/1.1" 200 OK
+2026-03-11 13:48:42,049 INFO pubmed.wrapper pubmed.search {'term': 'what are the latest treatments for type 2 diabetes?', 'ids': ['38965663', '34131333', '37130947', '36965839', '37037849'], 'count': 777, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 0.8997362089867238, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:48:42,764 INFO pubmed.wrapper pubmed.fetch_summaries {'requested': 12, 'returned': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'json', 'latency': 0.7133812080137432, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:48:43,051 INFO pubmed.wrapper pubmed.fetch_details {'requested': 12, 'parsed': 12, 'retry_count': 0, 'rate_limit_wait': 0.0, 'waited': 0.0, 'request_id': None, 'expected': 'xml', 'latency': 0.9808720000146423, 'status_code': 200, 'retry_events': (), 'backoff_schedule': ()}
+2026-03-11 13:48:43,105 INFO qdrant.wrapper qdrant.ensure_collection {'collection': 'medical_articles', 'action': 'validated', 'operation': 'describe', 'retry_events': (), 'backoff_schedule': (), 'retry_count': 0}
+2026-03-11 13:48:43,116 INFO qdrant.wrapper qdrant.query {'collection': 'medical_articles', 'returned': 8, 'took_ms': 29.929875017842278, 'retry_count': 0}
+2026-03-11 13:48:43,131 INFO qdrant.wrapper qdrant.upsert {'collection': 'medical_articles', 'processed': 8, 'failed': 0, 'took_ms': 26.034125010482967, 'retry_count': 0}
